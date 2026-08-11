@@ -20,11 +20,15 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Install Dependencies & Tools
+      - name: Install System Tools & Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zipalign apksigner apktool
-          pip install git+https://github.com/amursi/dCC.git || pip install dprotect
+          sudo apt-get install -y zipalign apksigner apktool python3-pip python3-setuptools
+          
+          # استنساخ المستودع الموثوق وتثبيته محلياً
+          git clone https://github.com/astree/dCC.git dcc_src
+          cd dcc_src
+          pip install . --break-system-packages || pip install .
 
       - name: Process and Convert APK (Dex2C)
         run: |
@@ -36,12 +40,10 @@ jobs:
           fi
           
           echo "Processing $INPUT_APK..."
-          # تشغيل محرك Dex2C تحويل الـ Dex إلى C وتجميعه بالـ NDK المدمج
           dcc --input "$INPUT_APK" --out output/protected.apk --ndk $ANDROID_NDK_LATEST_HOME
 
       - name: Sign Output APK
         run: |
-          # إنشاء مفتاح توقيع مؤقت لتوقيع التطبيق
           keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           apksigner sign --ks debug.keystore --ks-pass pass:android output/protected.apk
 
