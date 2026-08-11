@@ -25,9 +25,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner apktool python3-pip wget git
 
-      - name: Setup Dex2C (ispointer/Dex2C)
+      - name: Setup Dex2C (ispointer/Dex2cxx)
         run: |
-          git clone https://github.com/ispointer/Dex2C.git dex2c_tool
+          # الرابط الصحيح للمستودع
+          git clone https://github.com/ispointer/Dex2cxx.git dex2c_tool
           cd dex2c_tool
           
           # تثبيت المتطلبات
@@ -42,10 +43,10 @@ jobs:
             exit 1
           fi
 
-          echo "Processing $INPUT_APK with ispointer/Dex2C..."
+          echo "Processing $INPUT_APK with ispointer/Dex2cxx..."
           cd dex2c_tool
           
-          # تشغيل السكربت بحسب مسارات الـ NDK والـ APK
+          # تشغيل التشفير
           python3 main.py -i "../$INPUT_APK" -o "../output/protected_unaligned.apk" --ndk $ANDROID_NDK_LATEST_HOME
 
       - name: Align and Sign Output APK
