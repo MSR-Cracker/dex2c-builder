@@ -25,17 +25,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner python3-pip wget git
 
-      - name: Setup Dex2C Tool
+      - name: Setup Dex2C Engine (amimo/dcc)
         run: |
-          # استنساخ مستودع dex2c المفتوح والموثوق
-          git clone https://github.com/codehasan/dex2c.git dex2c_tool
+          # استنساخ المستودع الأصلي والرسمي لـ DCC
+          git clone https://github.com/amimo/dcc.git dex2c_tool
           cd dex2c_tool
           
-          # تحميل apktool
+          # تحميل أحدث إصدار ثابت من apktool مباشرة من releases الخاصة بـ GitHub
           mkdir -p tools
-          wget -O tools/apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.10.0.jar
+          wget -O tools/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
           
-          # تثبيت متطلبات Python
+          # تثبيت المتطلبات الخاصة بـ Python
           pip3 install -r requirements.txt || pip3 install -r requirements.txt --break-system-packages
 
       - name: Process and Convert APK (Dex2C)
@@ -49,34 +49,27 @@ jobs:
           
           echo "Processing $INPUT_APK..."
           
-          # إعداد ملف التهيئة بالمسارات الصحيحة للـ NDK
           cd dex2c_tool
+          
+          # إنشاء ملف dcc.cfg بالمسارات الصحيحة للـ NDK و Apktool
           cat <<EOF > dcc.cfg
           {
               "apktool": "tools/apktool.jar",
-              "ndk_dir": "$ANDROID_NDK_LATEST_HOME",
-              "signature": {
-                  "keystore_path": "keystore/debug.keystore",
-                  "alias": "androiddebugkey",
-                  "keystore_pass": "android",
-                  "store_pass": "android",
-                  "v1_enabled": true,
-                  "v2_enabled": true,
-                  "v3_enabled": true
-              }
+              "ndk_dir": "$ANDROID_NDK_LATEST_HOME"
           }
           EOF
           
-          # تشغيل التشفير
-          python3 dcc.py -a "../$INPUT_APK" -o "../output/protected.apk"
+          # تشغيل تحويل Dex إلى C
+          python3 dcc.py "../$INPUT_APK" -o "../output/protected.apk"
 
       - name: Sign Output APK
         run: |
           if [ -f output/protected.apk ]; then
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
             apksigner sign --ks debug.keystore --ks-pass pass:android output/protected.apk
+            echo "APK Signed successfully!"
           else
-            echo "Output APK not found!"
+            echo "Protected APK not found in output directory!"
             exit 1
           fi
 
