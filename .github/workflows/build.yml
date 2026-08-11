@@ -9,6 +9,10 @@ on:
 jobs:
   protect-apk:
     runs-on: ubuntu-latest
+    env:
+      # إجبار النظام والسكربت على استخدام البيئة الإنجليزية لتفادي أخطاء التسمية
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
 
     steps:
       - name: Checkout Repository
@@ -31,7 +35,7 @@ jobs:
           cd dex2c_tool
           pip3 install androguard pyelftools python-magic --break-system-packages || pip3 install androguard pyelftools python-magic
 
-      - name: Run Dex2C with Class Filter
+      - name: Run Dex2C Obfuscation
         run: |
           mkdir -p output
           INPUT_APK=$(ls input/*.apk | head -n 1)
@@ -50,8 +54,8 @@ jobs:
           }
           EOF
 
-          # التمرير مع استبدال النقط بـ slashes لتفادي خطأ التسمية في الـ C++
-          python3 dcc.py "../$INPUT_APK" --filter "Lcom/test1/MainActivity;" -o "../output/protected_unaligned.apk"
+          # التمرير بنفس صيغة الكلاس الظاهرة في التطبيق الناجح
+          python3 dcc.py "../$INPUT_APK" --filter "com.test1.MainActivity" -o "../output/protected_unaligned.apk"
 
       - name: Align and Sign Output APK
         run: |
