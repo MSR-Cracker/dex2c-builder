@@ -20,18 +20,18 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Install Dependencies
+      - name: Install System Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner apktool python3-pip git
 
-      - name: Setup Dex2C Tool
+      - name: Setup dProtect (Modern Dex2C)
         run: |
-          git clone https://github.com/amimo/dcc.git dex2c_tool
-          cd dex2c_tool
-          pip3 install -r requirements.txt || pip3 install -r requirements.txt --break-system-packages
+          git clone https://github.com/dProtect/dProtect.git dprotect_tool
+          cd dprotect_tool
+          pip3 install -r requirements.txt || pip3 install . --break-system-packages
 
-      - name: Run Dex2C Conversion
+      - name: Process APK with dProtect
         run: |
           mkdir -p output
           INPUT_APK=$(ls input/*.apk | head -n 1)
@@ -40,38 +40,24 @@ jobs:
             exit 1
           fi
 
-          echo "Input APK: $INPUT_APK"
+          echo "Processing $INPUT_APK with dProtect..."
+          cd dprotect_tool
           
-          # تشغيل DCC واستخراج الناتج لمجلد مؤقت
-          cd dex2c_tool
-          
-          # إعداد dcc.cfg بمسار NDK والمحلل النظامي
-          cat <<EOF > dcc.cfg
-          {
-              "apktool": "/usr/bin/apktool",
-              "ndk_dir": "$ANDROID_NDK_LATEST_HOME"
-          }
-          EOF
+          # تشغيل التشفير وتحويل الـ DEX إلى C++
+          python3 dprotect.py "../$INPUT_APK" -o "../output/protected_unsigned.apk" --ndk $ANDROID_NDK_LATEST_HOME
 
-          python3 dcc.py "../$INPUT_APK" -o "../output/protected_unaligned.apk"
-
-      - name: Sign & Verify APK
+      - name: Align and Sign Output APK
         run: |
-          cd output
-          ls -la
-          
-          if [ -f protected_unaligned.apk ]; then
-            # 1. ZipAlign
-            zipalign -v -p 4 protected_unaligned.apk protected_aligned.apk
+          if [ -f output/protected_unsigned.apk ]; then
+            echo "Signing APK..."
+            zipalign -v -p 4 output/protected_unsigned.apk output/protected_aligned.apk
             
-            # 2. Key Generation
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
             
-            # 3. Signing
-            apksigner sign --ks debug.keystore --ks-pass pass:android --out final_protected.apk protected_aligned.apk
-            echo "Done! Final APK created."
+            apksigner sign --ks debug.keystore --ks-pass pass:android --out output/protected_signed.apk output/protected_aligned.apk
+            echo "Protected and Signed APK is Ready!"
           else
-            echo "Error: DCC did not generate protected_unaligned.apk"
+            echo "Error: Output APK was not created by dProtect."
             exit 1
           fi
 
@@ -79,4 +65,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: protected-apk
-          path: output/final_protected.apk
+          path: output/protected_signed.apk
