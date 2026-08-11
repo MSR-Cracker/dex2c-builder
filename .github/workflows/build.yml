@@ -20,15 +20,23 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Install System Tools & Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zipalign apksigner apktool python3-pip python3-setuptools
+          sudo apt-get install -y zipalign apksigner python3-pip wget git
+
+      - name: Setup Dex2C Tool
+        run: |
+          # استنساخ مستودع dex2c المفتوح والموثوق
+          git clone https://github.com/codehasan/dex2c.git dex2c_tool
+          cd dex2c_tool
           
-          # استنساخ المستودع الموثوق وتثبيته محلياً
-          git clone https://github.com/astree/dCC.git dcc_src
-          cd dcc_src
-          pip install . --break-system-packages || pip install .
+          # تحميل apktool
+          mkdir -p tools
+          wget -O tools/apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.10.0.jar
+          
+          # تثبيت متطلبات Python
+          pip3 install -r requirements.txt || pip3 install -r requirements.txt --break-system-packages
 
       - name: Process and Convert APK (Dex2C)
         run: |
@@ -40,12 +48,37 @@ jobs:
           fi
           
           echo "Processing $INPUT_APK..."
-          dcc --input "$INPUT_APK" --out output/protected.apk --ndk $ANDROID_NDK_LATEST_HOME
+          
+          # إعداد ملف التهيئة بالمسارات الصحيحة للـ NDK
+          cd dex2c_tool
+          cat <<EOF > dcc.cfg
+          {
+              "apktool": "tools/apktool.jar",
+              "ndk_dir": "$ANDROID_NDK_LATEST_HOME",
+              "signature": {
+                  "keystore_path": "keystore/debug.keystore",
+                  "alias": "androiddebugkey",
+                  "keystore_pass": "android",
+                  "store_pass": "android",
+                  "v1_enabled": true,
+                  "v2_enabled": true,
+                  "v3_enabled": true
+              }
+          }
+          EOF
+          
+          # تشغيل التشفير
+          python3 dcc.py -a "../$INPUT_APK" -o "../output/protected.apk"
 
       - name: Sign Output APK
         run: |
-          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          apksigner sign --ks debug.keystore --ks-pass pass:android output/protected.apk
+          if [ -f output/protected.apk ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            apksigner sign --ks debug.keystore --ks-pass pass:android output/protected.apk
+          else
+            echo "Output APK not found!"
+            exit 1
+          fi
 
       - name: Upload Protected APK
         uses: actions/upload-artifact@v4
