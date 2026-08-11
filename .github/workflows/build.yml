@@ -29,11 +29,9 @@ jobs:
         run: |
           git clone https://github.com/amimo/dcc.git dex2c_tool
           cd dex2c_tool
-          
-          # تثبيت المكتبات المطلوبة مباشرة
           pip3 install androguard pyelftools python-magic --break-system-packages || pip3 install androguard pyelftools python-magic
 
-      - name: Run Dex2C Obfuscation
+      - name: Run Dex2C with Class Filter
         run: |
           mkdir -p output
           INPUT_APK=$(ls input/*.apk | head -n 1)
@@ -52,7 +50,8 @@ jobs:
           }
           EOF
 
-          python3 dcc.py "../$INPUT_APK" -o "../output/protected_unaligned.apk"
+          # التمرير مع استبدال النقط بـ slashes لتفادي خطأ التسمية في الـ C++
+          python3 dcc.py "../$INPUT_APK" --filter "Lcom/test1/MainActivity;" -o "../output/protected_unaligned.apk"
 
       - name: Align and Sign Output APK
         run: |
