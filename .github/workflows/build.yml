@@ -11,8 +11,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # استخدام الأكشن الصحيح والموثوق لتثبيت الـ NDK
       - name: Setup Android NDK
-        uses: nsetup/setup-ndk@v1
+        uses: ndk-project/setup-ndk@v1
         with:
           ndk-version: r25c
 
