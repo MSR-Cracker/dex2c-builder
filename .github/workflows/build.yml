@@ -25,17 +25,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner python3-pip wget git
 
-      - name: Setup Dex2C Engine (Modern APKEditor Engine)
+      - name: Setup Dex2C Engine
         run: |
-          # استنساخ المحرك الحديث MSR/rufusin Dex2C
-          git clone https://github.com/rufusin/Dex2C.git dex2c_tool
+          # استنساخ المستودع المستقر
+          git clone https://github.com/amimo/dcc.git dex2c_tool
           cd dex2c_tool
           
-          # تحميل APKEditor الحديثة لفك وتجميع الـ APK
+          # تحميل apktool من GitHub Releases
           mkdir -p tools
-          wget -O tools/apkeditor.jar https://github.com/REAndroid/APKEditor/releases/download/V1.4.2/APKEditor-1.4.2.jar
+          wget -q -O tools/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
           
           # تثبيت المتطلبات
+          pip3 install --upgrade pip
           pip3 install -r requirements.txt || pip3 install -r requirements.txt --break-system-packages
 
       - name: Process and Convert APK (Dex2C)
@@ -48,18 +49,18 @@ jobs:
           fi
           
           echo "Processing $INPUT_APK..."
-          cd dex2c_tool
           
-          # إعداد إعدادات المحرك مع NDK و APKEditor
+          # الانتقال للمجلد وإعداد الملف
+          cd dex2c_tool
           cat <<EOF > dcc.cfg
           {
-              "apkeditor": "tools/apkeditor.jar",
+              "apktool": "tools/apktool.jar",
               "ndk_dir": "$ANDROID_NDK_LATEST_HOME"
           }
           EOF
           
-          # تشغيل التشفير وتحويل DEX إلى C++
-          python3 dcc.py -a "../$INPUT_APK" -o "../output/protected_raw.apk"
+          # تشغيل dcc بالصيغة المباشرة
+          python3 dcc.py "../$INPUT_APK" -o "../output/protected_raw.apk"
 
       - name: Sign and Align Output APK
         run: |
