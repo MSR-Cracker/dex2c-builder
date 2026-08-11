@@ -1,0 +1,52 @@
+name: Build Dex2C Native Library
+
+on:
+  repository_dispatch:
+    types: [build_dex2c]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        uses: nsetup/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Create C++ Source File
+        run: |
+          mkdir -p jni
+          echo "${{ github.event.client_payload.cpp_code }}" > jni/native_bridge.cpp
+          
+          # إنشاء Android.mk
+          cat << 'EOF' > jni/Android.mk
+          LOCAL_PATH := $(call my-dir)
+          include $(CLEAR_VARS)
+          LOCAL_MODULE    := dex2c_native
+          LOCAL_SRC_FILES := native_bridge.cpp
+          LOCAL_LDLIBS    := -llog
+          include $(BUILD_SHARED_LIBRARY)
+          EOF
+
+          # إنشاء Application.mk
+          cat << 'EOF' > jni/Application.mk
+          APP_ABI := arm64-v8a armeabi-v7a x86_64
+          APP_PLATFORM := android-21
+          EOF
+
+      - name: Compile with NDK
+        run: |
+          $ANDROID_NDK_HOME/ndk-build -C jni/
+
+      - name: Zip Compiled Artifacts
+        run: |
+          zip -r dex2c_so_libs.zip libs/
+
+      - name: Upload Build Output
+        uses: actions/upload-artifact@v4
+        with:
+          name: dex2c-compiled-libs
+          path: dex2c_so_libs.zip
