@@ -25,17 +25,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zipalign apksigner apktool python3-pip wget git
 
-      - name: Setup Dex2C Tool (amimo/dcc)
+      - name: Setup Dex2C (ispointer/Dex2C)
         run: |
-          git clone https://github.com/amimo/dcc.git dex2c_tool
+          git clone https://github.com/ispointer/Dex2C.git dex2c_tool
           cd dex2c_tool
           
-          mkdir -p tools
-          wget -q -O tools/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
-          
+          # تثبيت المتطلبات
           pip3 install -r requirements.txt || pip3 install -r requirements.txt --break-system-packages
 
-      - name: Process and Convert MainActivity Only
+      - name: Run Dex2C Obfuscation
         run: |
           mkdir -p output
           INPUT_APK=$(ls input/*.apk | head -n 1)
@@ -44,29 +42,22 @@ jobs:
             exit 1
           fi
 
-          echo "Processing $INPUT_APK with filter for MainActivity..."
+          echo "Processing $INPUT_APK with ispointer/Dex2C..."
           cd dex2c_tool
-
-          cat <<EOF > dcc.cfg
-          {
-              "apktool": "tools/apktool.jar",
-              "ndk_dir": "$ANDROID_NDK_LATEST_HOME"
-          }
-          EOF
-
-          # تشغيل التشفير مع تحديد الكلاس المباشر لمنع الأخطاء
-          python3 dcc.py "../$INPUT_APK" --filter "com/test1/MainActivity" -o "../output/protected_unaligned.apk"
+          
+          # تشغيل السكربت بحسب مسارات الـ NDK والـ APK
+          python3 main.py -i "../$INPUT_APK" -o "../output/protected_unaligned.apk" --ndk $ANDROID_NDK_LATEST_HOME
 
       - name: Align and Sign Output APK
         run: |
           if [ -f output/protected_unaligned.apk ]; then
-            echo "Aligning and signing APK..."
+            echo "Aligning and signing output APK..."
             zipalign -v -p 4 output/protected_unaligned.apk output/protected_aligned.apk
             
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
             
             apksigner sign --ks debug.keystore --ks-pass pass:android --out output/protected_signed.apk output/protected_aligned.apk
-            echo "Done! Protected and Signed APK created successfully."
+            echo "Success! Protected APK created."
           else
             echo "Error: Output APK was not generated!"
             exit 1
