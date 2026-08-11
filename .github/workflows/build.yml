@@ -10,7 +10,6 @@ jobs:
   protect-apk:
     runs-on: ubuntu-latest
     env:
-      # إجبار النظام والسكربت على استخدام البيئة الإنجليزية لتفادي أخطاء التسمية
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
 
@@ -35,7 +34,7 @@ jobs:
           cd dex2c_tool
           pip3 install androguard pyelftools python-magic --break-system-packages || pip3 install androguard pyelftools python-magic
 
-      - name: Run Dex2C Obfuscation
+      - name: Run Full Dex2C Conversion
         run: |
           mkdir -p output
           INPUT_APK=$(ls input/*.apk | head -n 1)
@@ -54,26 +53,25 @@ jobs:
           }
           EOF
 
-          # التمرير بنفس صيغة الكلاس الظاهرة في التطبيق الناجح
-          python3 dcc.py "../$INPUT_APK" --filter "com.test1.MainActivity" -o "../output/protected_unaligned.apk"
+          # تشغيل التشفير على الـ APK بالكامل بدون الفلتر المعطل
+          python3 dcc.py "../$INPUT_APK" -o "../output/protected_unaligned.apk"
 
-      - name: Align and Sign Output APK
+      - name: Upload Output (Signed or Unsigned)
         run: |
-          if [ -f output/protected_unaligned.apk ]; then
-            echo "Aligning and signing output APK..."
-            zipalign -v -p 4 output/protected_unaligned.apk output/protected_aligned.apk
-            
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            
-            apksigner sign --ks debug.keystore --ks-pass pass:android --out output/protected_signed.apk output/protected_aligned.apk
-            echo "Success! Protected APK created."
+          cd output
+          if [ -f protected_unaligned.apk ]; then
+            # محاولة توقيع سريعة، ولو فشلت هيعتمد الملف غير الموقع ويرفعه برضه عشان توقع بنفسك على MT Manager
+            zipalign -v -p 4 protected_unaligned.apk protected_aligned.apk || cp protected_unaligned.apk protected_aligned.apk
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
+            apksigner sign --ks debug.keystore --ks-pass pass:android --out final_protected.apk protected_aligned.apk || cp protected_aligned.apk final_protected.apk
+            echo "Processing finished!"
           else
             echo "Error: Output APK was not generated!"
             exit 1
           fi
 
-      - name: Upload Protected APK
+      - name: Upload Protected APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: protected-apk
-          path: output/protected_signed.apk
+          path: output/final_protected.apk
