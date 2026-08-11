@@ -1,86 +1,325 @@
-
-      - name: Upload Protected APK
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: protected-apk
-          path: output/final_protected.apk
-name: Dex2C APK Obfuscator
+name: Dex2Cxx APK Obfuscator
 
 on:
+  workflow_dispatch:
   push:
     paths:
-      - 'input/*.apk'
-  workflow_dispatch:
+      - "input/*.apk"
+      - "filter.txt"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
 
 jobs:
   protect-apk:
     runs-on: ubuntu-latest
+
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
+      DEX2CXX_DIR: dex2cxx_tool
+      NDK_VERSION: "29.0.14206865"
 
     steps:
+
+      # ------------------------------------------------------------
+      # 1. Checkout your repository
+      # ------------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Java & Python
+      # ------------------------------------------------------------
+      # 2. Java 17
+      # ------------------------------------------------------------
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y zipalign apksigner apktool python3-pip wget git build-essential
+      # ------------------------------------------------------------
+      # 3. Android SDK
+      # ------------------------------------------------------------
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Setup Dex2C Engine
+      # ------------------------------------------------------------
+      # 4. Install Android build tools + NDK
+      # ------------------------------------------------------------
+      - name: Install Android SDK / NDK
+        shell: bash
         run: |
-          git clone https://github.com/amimo/dcc.git dex2c_tool
-          cd dex2c_tool
-          pip3 install androguard pyelftools python-magic --break-system-packages || pip3 install androguard pyelftools python-magic
+          set -euxo pipefail
 
-      - name: Execute Dex2C Engine Steps
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;${NDK_VERSION}"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+
+          ls -la "$ANDROID_HOME/build-tools"
+          ls -la "$ANDROID_HOME/ndk/${NDK_VERSION}"
+
+      # ------------------------------------------------------------
+      # 5. Find input APK
+      # ------------------------------------------------------------
+      - name: Locate Input APK
+        shell: bash
         run: |
+          set -e
+
           mkdir -p output
-          INPUT_APK=$(ls input/*.apk | head -n 1)
-          if [ -z "$INPUT_APK" ]; then
-            echo "No APK found in input/ directory!"
+
+          APK_COUNT=$(find input -maxdepth 1 -type f -name "*.apk" | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "::error::No APK found in input/"
             exit 1
           fi
 
-          echo "Found APK: $INPUT_APK"
-          cd dex2c_tool
-          
-          # 1. إعداد ملف التكوين
-          cat <<EOF > dcc.cfg
+          if [ "$APK_COUNT" -gt 1 ]; then
+            echo "::warning::More than one APK found. Using the first one."
+          fi
+
+          INPUT_APK=$(find input -maxdepth 1 -type f -name "*.apk" | sort | head -n 1)
+
+          echo "INPUT_APK=$INPUT_APK" >> "$GITHUB_ENV"
+
+          echo "Using APK:"
+          ls -lh "$INPUT_APK"
+
+          file "$INPUT_APK"
+
+      # ------------------------------------------------------------
+      # 6. Clone the ACTUAL Dex2cxx repository
+      # ------------------------------------------------------------
+      - name: Setup Dex2Cxx
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf "$DEX2CXX_DIR"
+
+          git clone --depth 1 \
+            https://github.com/ispointer/Dex2cxx.git \
+            "$DEX2CXX_DIR"
+
+          cd "$DEX2CXX_DIR"
+
+          echo "Dex2cxx commit:"
+          git rev-parse HEAD
+
+          echo
+          echo "Repository:"
+          find . -maxdepth 2 -type f | sort | head -100
+
+      # ------------------------------------------------------------
+      # 7. Configure Dex2cxx for GitHub Actions
+      # ------------------------------------------------------------
+      - name: Configure Dex2Cxx
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          cat > dxx.cfg <<EOF
           {
-              "apktool": "/usr/bin/apktool",
-              "ndk_dir": "$ANDROID_NDK_LATEST_HOME"
+              "apktool": "tools/apktool.jar",
+              "ndk_dir": "$ANDROID_HOME/ndk/$NDK_VERSION",
+              "signature": {
+                  "keystore_path": "keystore/debug.keystore",
+                  "alias": "androiddebugkey",
+                  "keystore_pass": "android",
+                  "store_pass": "android",
+                  "v1_enabled": true,
+                  "v2_enabled": true,
+                  "v3_enabled": true
+              },
+              "ollvm": {
+                  "enable": false,
+                  "flags": "-fvisibility=hidden"
+              }
           }
           EOF
 
-          # 2. إنشاء ملف الفلتر بصيغة Regex دقيقة لتحديد الكلاس
-          echo "com/test1/MainActivity" > filter.txt
+          echo "===== dxx.cfg ====="
+          cat dxx.cfg
 
-          # 3. تشغيل الأداة بحجم الـ parameters المعتمد فقط
-          python3 dcc.py "../$INPUT_APK" --filter filter.txt -o "../output/protected_unaligned.apk"
-
-      - name: Verify Output and Alignment
+      # ------------------------------------------------------------
+      # 8. Prepare filter
+      # ------------------------------------------------------------
+      - name: Prepare Class Filter
+        shell: bash
         run: |
-          cd output
-          if [ -f protected_unaligned.apk ]; then
-            echo "Success: APK generated!"
-            zipalign -v -p 4 protected_unaligned.apk final_protected.apk || cp protected_unaligned.apk final_protected.apk
+          set -euxo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          if [ -f ../filter.txt ]; then
+            cp ../filter.txt ./filter.txt
           else
-            echo "Error: Conversion failed!"
+            cat > filter.txt <<'EOF'
+          com.test1.MainActivity
+          EOF
+          fi
+
+          echo "===== filter.txt ====="
+          cat filter.txt
+
+      # ------------------------------------------------------------
+      # 9. Build dex2cxx.jar
+      # ------------------------------------------------------------
+      - name: Build Dex2Cxx JAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          chmod +x java/build.sh
+
+          ./java/build.sh
+
+          test -f dex2cxx.jar
+
+          echo
+          echo "Dex2cxx JAR:"
+          ls -lh dex2cxx.jar
+
+      # ------------------------------------------------------------
+      # 10. Verify Dex2cxx CLI
+      # ------------------------------------------------------------
+      - name: Verify Dex2Cxx
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          java -jar dex2cxx.jar --help
+
+      # ------------------------------------------------------------
+      # 11. Scan APK first
+      # ------------------------------------------------------------
+      - name: Scan APK / Generate Method Report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          rm -f methods-report.txt
+
+          java -jar dex2cxx.jar \
+            -a "../$INPUT_APK" \
+            --filter ./filter.txt \
+            --report ./methods-report.txt \
+            --list-only
+
+          echo
+          echo "===== Matching methods ====="
+
+          if [ -f methods-report.txt ]; then
+            cat methods-report.txt
+          fi
+
+          MATCHED=$(wc -l < methods-report.txt 2>/dev/null || echo 0)
+
+          echo
+          echo "Matched methods: $MATCHED"
+
+          if [ "$MATCHED" -eq 0 ]; then
+            echo "::error::No methods matched the filter."
+            echo "::error::Check filter.txt and the package/class name."
             exit 1
           fi
 
+      # ------------------------------------------------------------
+      # 12. Run Dex2Cxx
+      # ------------------------------------------------------------
+      - name: Run Dex2Cxx Conversion
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          rm -f protected.apk
+
+          echo "Starting Dex2Cxx..."
+          echo "Input: ../$INPUT_APK"
+
+          java -jar dex2cxx.jar \
+            -a "../$INPUT_APK" \
+            -o protected.apk \
+            --filter ./filter.txt \
+            --report ./methods-report.txt
+
+          test -f protected.apk
+          test -s protected.apk
+
+          echo
+          echo "===== Generated APK ====="
+          ls -lh protected.apk
+
+          file protected.apk
+
+      # ------------------------------------------------------------
+      # 13. Validate APK as ZIP
+      # ------------------------------------------------------------
+      - name: Validate Protected APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$DEX2CXX_DIR"
+
+          echo "Testing APK ZIP structure..."
+
+          unzip -t protected.apk >/dev/null
+
+          echo "ZIP structure: OK"
+
+          echo
+          echo "APK contents:"
+          unzip -l protected.apk | head -50
+
+      # ------------------------------------------------------------
+      # 14. Copy final APK
+      # ------------------------------------------------------------
+      - name: Prepare Final Output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output
+
+          cp "$DEX2CXX_DIR/protected.apk" \
+             output/final_protected.apk
+
+          test -s output/final_protected.apk
+
+          echo "===== Final APK ====="
+          ls -lh output/final_protected.apk
+
+          file output/final_protected.apk
+
+      # ------------------------------------------------------------
+      # 15. Upload APK
+      # ------------------------------------------------------------
       - name: Upload Protected APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: protected-apk
-          path: output/final_protected.apk
+          path: |
+            output/final_protected.apk
+            dex2cxx_tool/methods-report.txt
+          if-no-files-found: error
