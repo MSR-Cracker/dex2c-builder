@@ -1,47 +1,52 @@
-name: Build Dex2C Native Library
+name: Dex2C APK Obfuscator
 
 on:
-  repository_dispatch:
-    types: [build_dex2c]
+  push:
+    paths:
+      - 'input/*.apk'
+  workflow_dispatch:
 
 jobs:
-  build:
+  protect-apk:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Create JNI Directory & Source File
+      - name: Set up Java & Python
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install Dependencies & Tools
         run: |
-          mkdir -p jni
-          cat << 'EOF' > jni/native_bridge.cpp
-          ${{ github.event.client_payload.cpp_code }}
-          EOF
+          sudo apt-get update
+          sudo apt-get install -y zipalign apksigner apktool
+          pip install git+https://github.com/amursi/dCC.git || pip install dprotect
 
-          cat << 'EOF' > jni/Android.mk
-          LOCAL_PATH := $(call my-dir)
-          include $(CLEAR_VARS)
-          LOCAL_MODULE    := dex2c_native
-          LOCAL_SRC_FILES := native_bridge.cpp
-          LOCAL_LDLIBS    := -llog
-          include $(BUILD_SHARED_LIBRARY)
-          EOF
-
-          cat << 'EOF' > jni/Application.mk
-          APP_ABI := arm64-v8a armeabi-v7a x86_64
-          APP_PLATFORM := android-21
-          EOF
-
-      - name: Compile with Built-in NDK
+      - name: Process and Convert APK (Dex2C)
         run: |
-          $ANDROID_NDK_LATEST_HOME/ndk-build -C jni/
+          mkdir -p output
+          INPUT_APK=$(ls input/*.apk | head -n 1)
+          if [ -z "$INPUT_APK" ]; then
+            echo "No APK found in input/ directory!"
+            exit 1
+          fi
+          
+          echo "Processing $INPUT_APK..."
+          # تشغيل محرك Dex2C تحويل الـ Dex إلى C وتجميعه بالـ NDK المدمج
+          dcc --input "$INPUT_APK" --out output/protected.apk --ndk $ANDROID_NDK_LATEST_HOME
 
-      - name: Zip Compiled Artifacts
+      - name: Sign Output APK
         run: |
-          zip -r dex2c_so_libs.zip libs/
+          # إنشاء مفتاح توقيع مؤقت لتوقيع التطبيق
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          apksigner sign --ks debug.keystore --ks-pass pass:android output/protected.apk
 
-      - name: Upload Build Output
+      - name: Upload Protected APK
         uses: actions/upload-artifact@v4
         with:
-          name: dex2c-compiled-libs
-          path: dex2c_so_libs.zip
+          name: protected-apk
+          path: output/protected.apk
