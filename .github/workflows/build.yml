@@ -11,12 +11,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # استخدام اسم الأكشن الصحيح والموجود على GitHub
-      - name: Setup Android NDK
-        uses: nkmr-jp/setup-ndk-action@v1
-        with:
-          ndk-version: r25c
-
       - name: Create JNI Directory & Source File
         run: |
           mkdir -p jni
@@ -38,9 +32,9 @@ jobs:
           APP_PLATFORM := android-21
           EOF
 
-      - name: Compile with NDK
+      - name: Compile with Built-in NDK
         run: |
-          $ANDROID_NDK_HOME/ndk-build -C jni/
+          $ANDROID_NDK_LATEST_HOME/ndk-build -C jni/
 
       - name: Zip Compiled Artifacts
         run: |
