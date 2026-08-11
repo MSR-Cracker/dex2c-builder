@@ -20,26 +20,18 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zipalign apksigner python3-pip wget git
+          sudo apt-get install -y zipalign apksigner apktool python3-pip git
 
-      - name: Setup Dex2C Engine
+      - name: Setup Dex2C Tool
         run: |
-          # استنساخ المستودع المستقر
           git clone https://github.com/amimo/dcc.git dex2c_tool
           cd dex2c_tool
-          
-          # تحميل apktool من GitHub Releases
-          mkdir -p tools
-          wget -q -O tools/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
-          
-          # تثبيت المتطلبات
-          pip3 install --upgrade pip
           pip3 install -r requirements.txt || pip3 install -r requirements.txt --break-system-packages
 
-      - name: Process and Convert APK (Dex2C)
+      - name: Run Dex2C Conversion
         run: |
           mkdir -p output
           INPUT_APK=$(ls input/*.apk | head -n 1)
@@ -47,32 +39,39 @@ jobs:
             echo "No APK found in input/ directory!"
             exit 1
           fi
+
+          echo "Input APK: $INPUT_APK"
           
-          echo "Processing $INPUT_APK..."
-          
-          # الانتقال للمجلد وإعداد الملف
+          # تشغيل DCC واستخراج الناتج لمجلد مؤقت
           cd dex2c_tool
+          
+          # إعداد dcc.cfg بمسار NDK والمحلل النظامي
           cat <<EOF > dcc.cfg
           {
-              "apktool": "tools/apktool.jar",
+              "apktool": "/usr/bin/apktool",
               "ndk_dir": "$ANDROID_NDK_LATEST_HOME"
           }
           EOF
-          
-          # تشغيل dcc بالصيغة المباشرة
-          python3 dcc.py "../$INPUT_APK" -o "../output/protected_raw.apk"
 
-      - name: Sign and Align Output APK
+          python3 dcc.py "../$INPUT_APK" -o "../output/protected_unaligned.apk"
+
+      - name: Sign & Verify APK
         run: |
-          if [ -f output/protected_raw.apk ]; then
-            echo "Aligning and signing output APK..."
-            zipalign -v -p 4 output/protected_raw.apk output/protected_aligned.apk || cp output/protected_raw.apk output/protected_aligned.apk
+          cd output
+          ls -la
+          
+          if [ -f protected_unaligned.apk ]; then
+            # 1. ZipAlign
+            zipalign -v -p 4 protected_unaligned.apk protected_aligned.apk
             
+            # 2. Key Generation
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            apksigner sign --ks debug.keystore --ks-pass pass:android --out output/protected_final.apk output/protected_aligned.apk
-            echo "APK Protected & Signed successfully!"
+            
+            # 3. Signing
+            apksigner sign --ks debug.keystore --ks-pass pass:android --out final_protected.apk protected_aligned.apk
+            echo "Done! Final APK created."
           else
-            echo "Error: Failed to generate output APK!"
+            echo "Error: DCC did not generate protected_unaligned.apk"
             exit 1
           fi
 
@@ -80,4 +79,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: protected-apk
-          path: output/protected_final.apk
+          path: output/final_protected.apk
