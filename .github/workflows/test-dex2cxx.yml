@@ -1,0 +1,209 @@
+name: Test Dex2Cxx
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-dex2cxx:
+    runs-on: ubuntu-latest
+
+    env:
+      NDK_VERSION: "29.0.14206865"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;${NDK_VERSION}"
+
+      - name: Check Input APK
+        run: |
+          set -euo pipefail
+
+          test -s input/app.apk
+          unzip -t input/app.apk >/dev/null
+
+          echo "Input APK:"
+          ls -lh input/app.apk
+
+      - name: Clone Dex2Cxx
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            https://github.com/ispointer/Dex2cxx.git \
+            dex2cxx_tool
+
+          cd dex2cxx_tool
+
+          echo "Dex2Cxx commit:"
+          git rev-parse HEAD
+
+          echo
+          echo "Repository files:"
+          find . -maxdepth 2 -type f | sort | head -100
+
+      - name: Build Dex2Cxx
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          chmod +x java/build.sh
+
+          ./java/build.sh
+
+          test -s dex2cxx.jar
+
+          echo "Dex2Cxx JAR:"
+          ls -lh dex2cxx.jar
+
+      - name: Show Dex2Cxx Help
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          java -jar dex2cxx.jar --help
+
+      - name: Prepare Filter
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          if [ -s ../filter.txt ]; then
+            cp ../filter.txt ./filter.txt
+          else
+            cat > filter.txt <<'EOF'
+          com.test1.MainActivity
+          EOF
+          fi
+
+          echo "Filter:"
+          cat filter.txt
+
+      - name: Scan APK
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          rm -f methods-report.txt
+
+          java -jar dex2cxx.jar \
+            -a "../input/app.apk" \
+            --filter ./filter.txt \
+            --report ./methods-report.txt \
+            --list-only
+
+          echo
+          echo "========================================"
+          echo "MATCHED METHODS"
+          echo "========================================"
+
+          if [ -f methods-report.txt ]; then
+            cat methods-report.txt
+          fi
+
+          MATCHED=$(wc -l < methods-report.txt 2>/dev/null || echo 0)
+
+          echo
+          echo "Matched methods: $MATCHED"
+
+          if [ "$MATCHED" -eq 0 ]; then
+            echo "::error::No methods matched filter.txt"
+            exit 1
+          fi
+
+      - name: Run Dex2Cxx
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          rm -f protected.apk
+
+          java -jar dex2cxx.jar \
+            -a "../input/app.apk" \
+            -o protected.apk \
+            --filter ./filter.txt \
+            --report ./methods-report.txt
+
+          test -s protected.apk
+
+          echo
+          echo "========================================"
+          echo "PROTECTED APK"
+          echo "========================================"
+
+          ls -lh protected.apk
+
+          unzip -t protected.apk >/dev/null
+
+      - name: Analyze Output
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          echo "========================================"
+          echo "APK CONTENTS"
+          echo "========================================"
+
+          unzip -Z1 protected.apk \
+            | sort \
+            | grep -E \
+              '(^classes.*\.dex$|^lib/.*\.so$|^AndroidManifest.xml$)' \
+            || true
+
+          echo
+          echo "========================================"
+          echo "DEX FILES"
+          echo "========================================"
+
+          unzip -Z1 protected.apk \
+            | grep -E '^classes([0-9]*)?\.dex$' \
+            | sort -V \
+            || true
+
+          echo
+          echo "========================================"
+          echo "NATIVE LIBRARIES"
+          echo "========================================"
+
+          unzip -Z1 protected.apk \
+            | grep '^lib/.*/.*\.so$' \
+            || true
+
+      - name: Upload Dex2Cxx Result
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dex2cxx-test
+          path: |
+            dex2cxx_tool/protected.apk
+            dex2cxx_tool/methods-report.txt
+          if-no-files-found: error
