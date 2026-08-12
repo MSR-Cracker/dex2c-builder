@@ -182,10 +182,9 @@ jobs:
 
           rm -rf dex2cxx_tool
 
-          git clone \
-            --depth 1 \
-            https://github.com/ispointer/Dex2cxx.git \
-            dex2cxx_tool
+          git clone --depth 1 \
+          https://github.com/MSR-Cracker/Dex2cxx.git \
+          dex2cxx_tool
 
           cd dex2cxx_tool
 
