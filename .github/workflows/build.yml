@@ -20,7 +20,6 @@ jobs:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
       NDK_VERSION: "29.0.14206865"
-      LIB_NAME: "msr"
 
     steps:
 
@@ -46,7 +45,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # ============================================================
-      # 4. Install SDK / NDK
+      # 4. Install SDK + NDK
       # ============================================================
       - name: Install Android SDK and NDK
         shell: bash
@@ -63,12 +62,11 @@ jobs:
 
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
 
-          echo "NDK=$NDK"
-
           test -d "$NDK"
           test -f "$NDK/ndk-build"
 
-          echo "NDK installed successfully"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "NDK=$NDK"
 
       # ============================================================
       # 5. Locate APK
@@ -90,6 +88,10 @@ jobs:
             exit 1
           fi
 
+          if [ "$APK_COUNT" -gt 1 ]; then
+            echo "::warning::More than one APK found. Using the first one."
+          fi
+
           INPUT_APK=$(find input \
             -maxdepth 1 \
             -type f \
@@ -103,7 +105,75 @@ jobs:
           ls -lh "$INPUT_APK"
 
       # ============================================================
-      # 6. Clone Dex2Cxx
+      # 6. Build MSR Native Runtime
+      # ============================================================
+      - name: Build MSR Native Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+
+          cd runtime/jni
+
+          echo "========================================"
+          echo "BUILDING MSR NATIVE RUNTIME"
+          echo "========================================"
+
+          "$NDK/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT="$PWD/Android.mk" \
+            APP_ABI="arm64-v8a armeabi-v7a x86 x86_64" \
+            V=1
+
+          echo
+          echo "========================================"
+          echo "GENERATED MSR LIBRARIES"
+          echo "========================================"
+
+          find libs -type f -name "*.so" -print
+
+          test -s libs/arm64-v8a/libmsr.so
+          test -s libs/armeabi-v7a/libmsr.so
+          test -s libs/x86/libmsr.so
+          test -s libs/x86_64/libmsr.so
+
+          echo
+          echo "MSR runtime build: OK"
+
+      # ============================================================
+      # 7. Verify MSR Libraries
+      # ============================================================
+      - name: Verify MSR Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "VERIFYING MSR RUNTIME"
+          echo "========================================"
+
+          for ABI in \
+            arm64-v8a \
+            armeabi-v7a \
+            x86 \
+            x86_64
+          do
+            LIB="runtime/jni/libs/$ABI/libmsr.so"
+
+            echo
+            echo "ABI: $ABI"
+            ls -lh "$LIB"
+            file "$LIB"
+
+            test -s "$LIB"
+          done
+
+          echo
+          echo "All MSR libraries verified."
+
+      # ============================================================
+      # 8. Clone Dex2Cxx
       # ============================================================
       - name: Clone Dex2Cxx
         shell: bash
@@ -123,7 +193,7 @@ jobs:
           git rev-parse HEAD
 
       # ============================================================
-      # 7. Configure Dex2Cxx
+      # 9. Configure Dex2Cxx
       # ============================================================
       - name: Configure Dex2Cxx
         shell: bash
@@ -154,10 +224,11 @@ jobs:
           }
           EOF
 
+          echo "===== dxx.cfg ====="
           cat dxx.cfg
 
       # ============================================================
-      # 8. Prepare filter
+      # 10. Prepare Filter
       # ============================================================
       - name: Prepare Filter
         shell: bash
@@ -166,17 +237,17 @@ jobs:
 
           cd dex2cxx_tool
 
-          if [ -f ../filter.txt ]; then
+          if [ -s ../filter.txt ]; then
             cp ../filter.txt ./filter.txt
           else
             printf '%s\n' 'com.test1.MainActivity' > filter.txt
           fi
 
-          echo "===== FILTER ====="
+          echo "===== filter.txt ====="
           cat filter.txt
 
       # ============================================================
-      # 9. Build Dex2Cxx JAR
+      # 11. Build Dex2Cxx JAR
       # ============================================================
       - name: Build Dex2Cxx
         shell: bash
@@ -191,11 +262,11 @@ jobs:
 
           test -s dex2cxx.jar
 
-          echo "Dex2Cxx built:"
+          echo "Dex2Cxx JAR:"
           ls -lh dex2cxx.jar
 
       # ============================================================
-      # 10. Verify CLI
+      # 12. Verify Dex2Cxx CLI
       # ============================================================
       - name: Verify Dex2Cxx
         shell: bash
@@ -207,25 +278,7 @@ jobs:
           java -jar dex2cxx.jar --help
 
       # ============================================================
-      # 11. Verify NDK
-      # ============================================================
-      - name: Verify NDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
-
-          echo "NDK:"
-          ls -ld "$NDK"
-
-          echo "ndk-build:"
-          ls -l "$NDK/ndk-build"
-
-          "$NDK/ndk-build" --version
-
-      # ============================================================
-      # 12. Scan APK
+      # 13. Scan APK
       # ============================================================
       - name: Scan APK
         shell: bash
@@ -260,7 +313,7 @@ jobs:
           fi
 
       # ============================================================
-      # 13. Run Dex2Cxx
+      # 14. Run Dex2Cxx
       # ============================================================
       - name: Run Dex2Cxx
         shell: bash
@@ -288,7 +341,7 @@ jobs:
           ls -lh protected.apk
 
       # ============================================================
-      # 14. Validate APK
+      # 15. Validate APK
       # ============================================================
       - name: Validate Protected APK
         shell: bash
@@ -302,9 +355,9 @@ jobs:
           echo "APK ZIP structure: OK"
 
       # ============================================================
-      # 15. Analyze output
+      # 16. Analyze Dex2Cxx Output
       # ============================================================
-      - name: Analyze Output
+      - name: Analyze Dex2Cxx Output
         shell: bash
         run: |
           set -euo pipefail
@@ -313,23 +366,23 @@ jobs:
 
           echo
           echo "========================================"
-          echo "OUTPUT DEX FILES"
+          echo "DEX FILES"
           echo "========================================"
 
-          unzip -l protected.apk \
-            | awk '{print $4}' \
+          unzip -Z1 protected.apk \
             | grep -E '^classes[0-9]*\.dex$' \
-            | sort -u || true
+            | sort -V \
+            || true
 
           echo
           echo "========================================"
-          echo "OUTPUT NATIVE LIBRARIES"
+          echo "NATIVE LIBRARIES FROM DEX2CXX"
           echo "========================================"
 
-          unzip -l protected.apk \
-            | awk '{print $4}' \
+          unzip -Z1 protected.apk \
             | grep '^lib/.*/.*\.so$' \
-            | sort -u || true
+            | sort \
+            || true
 
           echo
           echo "========================================"
@@ -339,7 +392,7 @@ jobs:
           cat methods-report.txt
 
       # ============================================================
-      # 16. Prepare final artifact
+      # 17. Prepare Final Output
       # ============================================================
       - name: Prepare Final Output
         shell: bash
@@ -349,13 +402,24 @@ jobs:
           mkdir -p output
 
           cp dex2cxx_tool/protected.apk \
-             output/final_protected.apk
+            output/final_protected.apk
 
           cp dex2cxx_tool/methods-report.txt \
-             output/methods-report.txt
+            output/methods-report.txt
 
-          test -s output/final_protected.apk
+          cp runtime/jni/libs/arm64-v8a/libmsr.so \
+            output/libmsr-arm64-v8a.so
 
+          cp runtime/jni/libs/armeabi-v7a/libmsr.so \
+            output/libmsr-armeabi-v7a.so
+
+          cp runtime/jni/libs/x86/libmsr.so \
+            output/libmsr-x86.so
+
+          cp runtime/jni/libs/x86_64/libmsr.so \
+            output/libmsr-x86_64.so
+
+          echo
           echo "========================================"
           echo "FINAL OUTPUT"
           echo "========================================"
@@ -363,14 +427,18 @@ jobs:
           ls -lh output/
 
       # ============================================================
-      # 17. Upload
+      # 18. Upload
       # ============================================================
-      - name: Upload Protected APK
+      - name: Upload MSR Build
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MSR-protected-apk
+          name: MSR-protected-build
           path: |
             output/final_protected.apk
             output/methods-report.txt
+            output/libmsr-arm64-v8a.so
+            output/libmsr-armeabi-v7a.so
+            output/libmsr-x86.so
+            output/libmsr-x86_64.so
           if-no-files-found: error
