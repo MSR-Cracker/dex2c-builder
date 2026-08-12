@@ -77,6 +77,15 @@ jobs:
 
           unzip -t input/app.apk >/dev/null
 
+          echo
+          echo "Original APK DEX files:"
+
+          unzip -Z1 input/app.apk \
+            | grep -E '^classes([0-9]*)?\.dex$' \
+            | sort -V \
+            || true
+
+          echo
           echo "APK is valid."
 
       # ============================================================
@@ -138,7 +147,7 @@ jobs:
           echo "All 4 native libraries are available."
 
       # ============================================================
-      # 8. Prepare Runtime Java Sources
+      # 8. Prepare Runtime Java
       # ============================================================
       - name: Prepare Runtime Java
         shell: bash
@@ -146,7 +155,9 @@ jobs:
           set -euo pipefail
 
           rm -rf build/runtime-src
-          mkdir -p build/runtime-src/native_library0
+
+          mkdir -p \
+            build/runtime-src/native_library0
 
           cp \
             runtime/java/native_library0/Loader.java \
@@ -185,6 +196,7 @@ jobs:
           set -euo pipefail
 
           rm -rf build/runtime-classes
+
           mkdir -p build/runtime-classes
 
           javac \
@@ -231,6 +243,7 @@ jobs:
           fi
 
           rm -rf build/runtime-dex
+
           mkdir -p build/runtime-dex
 
           echo "Input class files:"
@@ -240,22 +253,17 @@ jobs:
             -name "*.class" \
             -print
 
-          CLASS_COUNT=$(find build/runtime-classes \
-            -type f \
-            -name "*.class" \
-            | wc -l)
-
-          if [ "$CLASS_COUNT" -eq 0 ]; then
-            echo "::error::No .class files available for D8."
-            exit 1
-          fi
-
           mapfile -t CLASS_FILES < <(
             find build/runtime-classes \
               -type f \
               -name "*.class" \
               -print
           )
+
+          if [ "${#CLASS_FILES[@]}" -eq 0 ]; then
+            echo "::error::No .class files available for D8."
+            exit 1
+          fi
 
           echo
           echo "Running D8..."
@@ -270,24 +278,21 @@ jobs:
             exit 1
           fi
 
-          mv \
-            build/runtime-dex/classes.dex \
-            build/runtime-dex/classes3.dex
-
           echo
-          echo "Runtime DEX generated successfully:"
+          echo "Runtime DEX generated:"
 
-          ls -lh build/runtime-dex/classes3.dex
+          ls -lh build/runtime-dex/classes.dex
 
       # ============================================================
-      # 11. Prepare Test APK
+      # 11. Prepare APK Staging Directory
       # ============================================================
-      - name: Prepare Test APK
+      - name: Prepare APK
         shell: bash
         run: |
           set -euo pipefail
 
           rm -rf build/apk
+
           mkdir -p build/apk
 
           echo "Extracting original APK..."
@@ -296,27 +301,68 @@ jobs:
             input/app.apk \
             -d build/apk
 
-          # --------------------------------------------------------
-          # Add runtime DEX
-          # --------------------------------------------------------
+          echo
+          echo "Original DEX files:"
+
+          find build/apk \
+            -maxdepth 1 \
+            -type f \
+            -name "classes*.dex" \
+            -printf '%f\n' \
+            | sort -V
+
+      # ============================================================
+      # 12. Find Next Available DEX Number
+      # ============================================================
+      - name: Find Next DEX Slot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NEXT_DEX=1
+
+          while true
+          do
+            if [ "$NEXT_DEX" -eq 1 ]; then
+              DEX_NAME="classes.dex"
+            else
+              DEX_NAME="classes${NEXT_DEX}.dex"
+            fi
+
+            if [ ! -f "build/apk/$DEX_NAME" ]; then
+              break
+            fi
+
+            NEXT_DEX=$((NEXT_DEX + 1))
+          done
+
+          echo "NEXT_DEX=$NEXT_DEX" >> "$GITHUB_ENV"
+          echo "RUNTIME_DEX_NAME=$DEX_NAME" >> "$GITHUB_ENV"
+
+          echo
+          echo "Next available DEX slot:"
+          echo "$DEX_NAME"
+
+      # ============================================================
+      # 13. Inject Runtime DEX + Native Libraries
+      # ============================================================
+      - name: Inject Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Injecting runtime DEX:"
+          echo "$RUNTIME_DEX_NAME"
 
           cp \
-            build/runtime-dex/classes3.dex \
-            build/apk/classes3.dex
-
-          # --------------------------------------------------------
-          # Create ABI directories
-          # --------------------------------------------------------
+            build/runtime-dex/classes.dex \
+            "build/apk/$RUNTIME_DEX_NAME"
 
           mkdir -p \
             build/apk/lib/arm64-v8a \
             build/apk/lib/armeabi-v7a \
             build/apk/lib/x86 \
             build/apk/lib/x86_64
-
-          # --------------------------------------------------------
-          # Add native libraries
-          # --------------------------------------------------------
 
           cp \
             runtime/jni/libs/arm64-v8a/libnative_library.so \
@@ -335,11 +381,17 @@ jobs:
             build/apk/lib/x86_64/
 
           echo
-          echo "Runtime injected into APK."
+          echo "Runtime injected successfully."
 
           echo
-          echo "Runtime DEX:"
-          ls -lh build/apk/classes3.dex
+          echo "DEX files now present:"
+
+          find build/apk \
+            -maxdepth 1 \
+            -type f \
+            -name "classes*.dex" \
+            -printf '%f\n' \
+            | sort -V
 
           echo
           echo "Native libraries:"
@@ -347,10 +399,10 @@ jobs:
           find build/apk/lib \
             -type f \
             -name "*.so" \
-            -exec ls -lh {} \;
+            -print
 
       # ============================================================
-      # 12. Build APK
+      # 14. Build APK
       # ============================================================
       - name: Build APK
         shell: bash
@@ -372,7 +424,7 @@ jobs:
           echo "APK rebuilt successfully."
 
       # ============================================================
-      # 13. Zipalign APK
+      # 15. Zipalign
       # ============================================================
       - name: Zipalign APK
         shell: bash
@@ -380,11 +432,6 @@ jobs:
           set -euo pipefail
 
           ZIPALIGN="$ANDROID_HOME/build-tools/${BUILD_TOOLS}/zipalign"
-
-          if [ ! -x "$ZIPALIGN" ]; then
-            echo "::error::zipalign was not found."
-            exit 1
-          fi
 
           "$ZIPALIGN" \
             -f \
@@ -395,10 +442,11 @@ jobs:
 
           echo
           echo "Aligned APK:"
+
           ls -lh build/runtime-test.apk
 
       # ============================================================
-      # 14. Verify Runtime APK
+      # 16. Verify Final APK
       # ============================================================
       - name: Verify Runtime APK
         shell: bash
@@ -407,13 +455,10 @@ jobs:
 
           APK="build/runtime-test.apk"
 
-          if [ ! -s "$APK" ]; then
-            echo "::error::Runtime APK was not generated."
-            exit 1
-          fi
+          test -s "$APK"
 
           echo "========================================"
-          echo "APK ZIP TEST"
+          echo "ZIP TEST"
           echo "========================================"
 
           unzip -t "$APK" >/dev/null
@@ -422,15 +467,39 @@ jobs:
 
           echo
           echo "========================================"
-          echo "DEX FILES"
+          echo "FINAL DEX FILES"
           echo "========================================"
 
+          FINAL_DEX_COUNT=$(
+            unzip -Z1 "$APK" \
+              | grep -E '^classes([0-9]*)?\.dex$' \
+              | wc -l
+          )
+
           unzip -Z1 "$APK" \
-            | grep -E '^classes([0-9]*)?\.dex$'
+            | grep -E '^classes([0-9]*)?\.dex$' \
+            | sort -V
+
+          echo
+          echo "DEX count: $FINAL_DEX_COUNT"
+
+          echo
+          echo "Runtime DEX expected:"
+          echo "$RUNTIME_DEX_NAME"
+
+          if ! unzip -Z1 "$APK" \
+              | grep -q "^$RUNTIME_DEX_NAME$"
+          then
+            echo "::error::Runtime DEX $RUNTIME_DEX_NAME was not found in final APK."
+            exit 1
+          fi
+
+          echo
+          echo "Runtime DEX: FOUND"
 
           echo
           echo "========================================"
-          echo "NATIVE LIBRARIES"
+          echo "FINAL NATIVE LIBRARIES"
           echo "========================================"
 
           unzip -Z1 "$APK" \
@@ -438,27 +507,13 @@ jobs:
 
           echo
           echo "========================================"
-          echo "RUNTIME DEX"
-          echo "========================================"
-
-          unzip -p \
-            "$APK" \
-            classes3.dex \
-            > build/classes3.dex
-
-          test -s build/classes3.dex
-
-          ls -lh build/classes3.dex
-
-          echo
-          echo "========================================"
-          echo "APK SUMMARY"
+          echo "FINAL APK"
           echo "========================================"
 
           ls -lh "$APK"
 
       # ============================================================
-      # 15. Upload Runtime Test APK
+      # 17. Upload Artifact
       # ============================================================
       - name: Upload Runtime Test APK
         if: success()
@@ -467,5 +522,4 @@ jobs:
           name: runtime-test-apk
           path: |
             build/runtime-test.apk
-            build/classes3.dex
           if-no-files-found: error
