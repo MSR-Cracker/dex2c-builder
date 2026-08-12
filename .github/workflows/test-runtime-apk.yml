@@ -15,20 +15,36 @@ jobs:
       BUILD_TOOLS: "35.0.0"
 
     steps:
+
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. Java 17
+      # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # ============================================================
+      # 3. Android SDK
+      # ============================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # ============================================================
+      # 4. Install Android Build Tools
+      # ============================================================
       - name: Install Android SDK
+        shell: bash
         run: |
+          set -euo pipefail
+
           yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager \
@@ -36,29 +52,47 @@ jobs:
             "platforms;android-35" \
             "build-tools;${BUILD_TOOLS}"
 
+          echo "Android SDK ready."
+
+      # ============================================================
+      # 5. Verify Input APK
+      # ============================================================
       - name: Check Input APK
+        shell: bash
         run: |
           set -euo pipefail
 
-          test -s input/app.apk
+          if [ ! -s input/app.apk ]; then
+            echo "::error::input/app.apk was not found."
+            exit 1
+          fi
 
           echo "Input APK:"
           ls -lh input/app.apk
+
+          echo
+          echo "Checking APK ZIP structure..."
 
           unzip -t input/app.apk >/dev/null
 
           echo "APK is valid."
 
+      # ============================================================
+      # 6. Prepare Runtime Java Sources
+      # ============================================================
       - name: Prepare Runtime Java
+        shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p build/runtime-src
+          rm -rf build/runtime-src
+          mkdir -p build/runtime-src/native_library0
 
-          cp runtime/java/native_library0/Loader.java \
-             build/runtime-src/
+          cp \
+            runtime/java/native_library0/Loader.java \
+            build/runtime-src/native_library0/Loader.java
 
-          cat > build/runtime-src/RuntimeTest.java <<'EOF'
+          cat > build/runtime-src/native_library0/RuntimeTest.java <<'EOF'
           package native_library0;
 
           public final class RuntimeTest {
@@ -76,66 +110,181 @@ jobs:
           EOF
 
           echo "Runtime Java files:"
-          find build/runtime-src -type f -print
 
+          find build/runtime-src \
+            -type f \
+            -name "*.java" \
+            -print
+
+      # ============================================================
+      # 7. Compile Java Runtime
+      # ============================================================
       - name: Compile Runtime Java
+        shell: bash
         run: |
           set -euo pipefail
 
+          rm -rf build/runtime-classes
           mkdir -p build/runtime-classes
 
           javac \
             -source 8 \
             -target 8 \
             -d build/runtime-classes \
-            build/runtime-src/Loader.java \
-            build/runtime-src/RuntimeTest.java
+            build/runtime-src/native_library0/Loader.java \
+            build/runtime-src/native_library0/RuntimeTest.java
 
-          echo "Compiled classes:"
-          find build/runtime-classes -type f -print
+          echo
+          echo "Compiled class files:"
 
+          find build/runtime-classes \
+            -type f \
+            -name "*.class" \
+            -print
+
+          CLASS_COUNT=$(find build/runtime-classes \
+            -type f \
+            -name "*.class" \
+            | wc -l)
+
+          if [ "$CLASS_COUNT" -eq 0 ]; then
+            echo "::error::No .class files were generated."
+            exit 1
+          fi
+
+          echo
+          echo "Generated class count: $CLASS_COUNT"
+
+      # ============================================================
+      # 8. Create Runtime DEX
+      # ============================================================
       - name: Create Runtime DEX
+        shell: bash
         run: |
           set -euo pipefail
 
           D8="$ANDROID_HOME/build-tools/${BUILD_TOOLS}/d8"
 
-          test -x "$D8"
+          if [ ! -x "$D8" ]; then
+            echo "::error::D8 was not found."
+            exit 1
+          fi
 
+          rm -rf build/runtime-dex
           mkdir -p build/runtime-dex
+
+          echo "Input class files:"
+
+          find build/runtime-classes \
+            -type f \
+            -name "*.class" \
+            -print
+
+          CLASS_COUNT=$(find build/runtime-classes \
+            -type f \
+            -name "*.class" \
+            | wc -l)
+
+          if [ "$CLASS_COUNT" -eq 0 ]; then
+            echo "::error::No .class files available for D8."
+            exit 1
+          fi
+
+          echo
+          echo "Running D8..."
+
+          mapfile -t CLASS_FILES < <(
+            find build/runtime-classes \
+              -type f \
+              -name "*.class" \
+              -print
+          )
 
           "$D8" \
             --min-api 26 \
             --output build/runtime-dex \
-            build/runtime-classes/*.class
+            "${CLASS_FILES[@]}"
 
-          test -s build/runtime-dex/classes.dex
+          if [ ! -s build/runtime-dex/classes.dex ]; then
+            echo "::error::D8 did not generate classes.dex."
+            exit 1
+          fi
 
           mv \
             build/runtime-dex/classes.dex \
             build/runtime-dex/classes3.dex
 
-          echo "Runtime DEX:"
+          echo
+          echo "Runtime DEX generated successfully:"
+
           ls -lh build/runtime-dex/classes3.dex
 
+      # ============================================================
+      # 9. Verify Native Runtime Libraries
+      # ============================================================
+      - name: Verify Native Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking native libraries..."
+
+          for ABI in \
+            arm64-v8a \
+            armeabi-v7a \
+            x86 \
+            x86_64
+          do
+
+            LIB="runtime/jni/libs/$ABI/libnative_library.so"
+
+            if [ ! -s "$LIB" ]; then
+              echo "::error::Missing native library: $LIB"
+              exit 1
+            fi
+
+            echo "OK: $LIB"
+
+          done
+
+      # ============================================================
+      # 10. Prepare Test APK
+      # ============================================================
       - name: Prepare Test APK
+        shell: bash
         run: |
           set -euo pipefail
 
           rm -rf build/apk
           mkdir -p build/apk
 
-          unzip -q input/app.apk -d build/apk
+          echo "Extracting original APK..."
+
+          unzip -q \
+            input/app.apk \
+            -d build/apk
+
+          # --------------------------------------------------------
+          # Add runtime DEX
+          # --------------------------------------------------------
 
           cp \
             build/runtime-dex/classes3.dex \
             build/apk/classes3.dex
+
+          # --------------------------------------------------------
+          # Create ABI directories
+          # --------------------------------------------------------
 
           mkdir -p \
             build/apk/lib/arm64-v8a \
             build/apk/lib/armeabi-v7a \
             build/apk/lib/x86 \
             build/apk/lib/x86_64
+
+          # --------------------------------------------------------
+          # Add native libraries
+          # --------------------------------------------------------
 
           cp \
             runtime/jni/libs/arm64-v8a/libnative_library.so \
@@ -153,27 +302,57 @@ jobs:
             runtime/jni/libs/x86_64/libnative_library.so \
             build/apk/lib/x86_64/
 
-          echo "Runtime injected."
+          echo
+          echo "Runtime injected into APK."
 
+          echo
+          echo "Added DEX:"
+          ls -lh build/apk/classes3.dex
+
+          echo
+          echo "Added native libraries:"
+
+          find build/apk/lib \
+            -type f \
+            -name "*.so" \
+            -exec ls -lh {} \;
+
+      # ============================================================
+      # 11. Build APK
+      # ============================================================
       - name: Build APK
+        shell: bash
         run: |
           set -euo pipefail
 
           cd build/apk
 
-          zip -qr ../runtime-test-unaligned.apk .
+          zip -qr \
+            ../runtime-test-unaligned.apk \
+            .
 
           cd ../..
 
-          unzip -t build/runtime-test-unaligned.apk >/dev/null
+          unzip -t \
+            build/runtime-test-unaligned.apk \
+            >/dev/null
 
           echo "APK rebuilt successfully."
 
+      # ============================================================
+      # 12. Zipalign APK
+      # ============================================================
       - name: Zipalign APK
+        shell: bash
         run: |
           set -euo pipefail
 
           ZIPALIGN="$ANDROID_HOME/build-tools/${BUILD_TOOLS}/zipalign"
+
+          if [ ! -x "$ZIPALIGN" ]; then
+            echo "::error::zipalign was not found."
+            exit 1
+          fi
 
           "$ZIPALIGN" \
             -f \
@@ -182,19 +361,37 @@ jobs:
             build/runtime-test-unaligned.apk \
             build/runtime-test.apk
 
+          echo
           echo "Aligned APK:"
+
           ls -lh build/runtime-test.apk
 
+      # ============================================================
+      # 13. Verify Runtime APK
+      # ============================================================
       - name: Verify Runtime APK
+        shell: bash
         run: |
           set -euo pipefail
 
           APK="build/runtime-test.apk"
 
-          unzip -t "$APK" >/dev/null
+          if [ ! -s "$APK" ]; then
+            echo "::error::Runtime APK was not generated."
+            exit 1
+          fi
 
           echo "========================================"
-          echo "DEX"
+          echo "APK ZIP TEST"
+          echo "========================================"
+
+          unzip -t "$APK" >/dev/null
+
+          echo "ZIP: OK"
+
+          echo
+          echo "========================================"
+          echo "DEX FILES"
           echo "========================================"
 
           unzip -Z1 "$APK" \
@@ -202,7 +399,7 @@ jobs:
 
           echo
           echo "========================================"
-          echo "Native libraries"
+          echo "NATIVE LIBRARIES"
           echo "========================================"
 
           unzip -Z1 "$APK" \
@@ -210,18 +407,30 @@ jobs:
 
           echo
           echo "========================================"
-          echo "Runtime classes"
+          echo "RUNTIME DEX"
           echo "========================================"
 
-          unzip -p "$APK" classes3.dex \
+          unzip -p \
+            "$APK" \
+            classes3.dex \
             > build/classes3.dex
 
-          "$ANDROID_HOME/build-tools/${BUILD_TOOLS}/d8" \
-            --version
+          test -s build/classes3.dex
 
           ls -lh build/classes3.dex
 
+          echo
+          echo "========================================"
+          echo "APK SUMMARY"
+          echo "========================================"
+
+          ls -lh "$APK"
+
+      # ============================================================
+      # 14. Upload Test APK
+      # ============================================================
       - name: Upload Runtime Test APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: runtime-test-apk
