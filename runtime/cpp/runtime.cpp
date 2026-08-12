@@ -16,12 +16,12 @@ bool register_class(
     jclass clazz
 ) {
     /*
-     * Prototype runtime.
+     * MSR native runtime prototype.
      *
      * class_id identifies the generated native class.
      *
-     * The actual native methods will be registered by
-     * the code generator in the next stage.
+     * Native method registration will be supplied by
+     * the generated wrapper layer.
      */
 
     (void)env;
