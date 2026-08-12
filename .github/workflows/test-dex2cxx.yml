@@ -15,18 +15,31 @@ jobs:
       BUILD_TOOLS: "35.0.0"
 
     steps:
+
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. Java 17
+      # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # ============================================================
+      # 3. Android SDK
+      # ============================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # ============================================================
+      # 4. Install Android SDK + NDK
+      # ============================================================
       - name: Install Android SDK and NDK
         shell: bash
         run: |
@@ -40,17 +53,26 @@ jobs:
             "build-tools;${BUILD_TOOLS}" \
             "ndk;${NDK_VERSION}"
 
-          test -d "$ANDROID_HOME/ndk/${NDK_VERSION}"
+          NDK_DIR="$ANDROID_HOME/ndk/${NDK_VERSION}"
 
-          echo "Android SDK: $ANDROID_HOME"
-          echo "NDK: $ANDROID_HOME/ndk/${NDK_VERSION}"
+          test -d "$NDK_DIR"
+          test -x "$NDK_DIR/ndk-build"
 
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "NDK_DIR=$NDK_DIR"
+
+      # ============================================================
+      # 5. Check Input APK
+      # ============================================================
       - name: Check Input APK
         shell: bash
         run: |
           set -euo pipefail
 
-          test -s input/app.apk
+          if [ ! -s input/app.apk ]; then
+            echo "::error::input/app.apk was not found."
+            exit 1
+          fi
 
           echo "Input APK:"
           ls -lh input/app.apk
@@ -65,6 +87,9 @@ jobs:
             | sort -V \
             || true
 
+      # ============================================================
+      # 6. Clone Dex2Cxx
+      # ============================================================
       - name: Clone Dex2Cxx
         shell: bash
         run: |
@@ -83,50 +108,8 @@ jobs:
           git rev-parse HEAD
 
       # ============================================================
-      # IMPORTANT:
-      # Dex2Cxx looks for its own android-ndk directory.
-      # Put a local copy there so it doesn't download r30-beta2.
+      # 7. Configure Dex2Cxx
       # ============================================================
-      - name: Prepare Dex2Cxx Local NDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_NDK="$ANDROID_HOME/ndk/${NDK_VERSION}"
-          TARGET_NDK="$GITHUB_WORKSPACE/dex2cxx_tool/android-ndk"
-
-          test -d "$SOURCE_NDK"
-
-          rm -rf "$TARGET_NDK"
-
-          echo "Copying Android NDK..."
-          echo "FROM: $SOURCE_NDK"
-          echo "TO:   $TARGET_NDK"
-
-          cp -a "$SOURCE_NDK" "$TARGET_NDK"
-
-          echo
-          echo "Local NDK created."
-
-          test -d "$TARGET_NDK"
-
-          # Do NOT chmod the SDK filesystem.
-          # We only modify the workspace copy.
-          chmod +x "$TARGET_NDK/ndk-build" || true
-          chmod +x "$TARGET_NDK/build/ndk-build" || true
-
-          find "$TARGET_NDK/build" \
-            -type f \
-            -name "ndk-build" \
-            -exec chmod +x {} \; \
-            || true
-
-          echo
-          echo "Local ndk-build:"
-          ls -l "$TARGET_NDK/ndk-build"
-
-          test -x "$TARGET_NDK/ndk-build"
-
       - name: Configure Dex2Cxx
         shell: bash
         run: |
@@ -134,10 +117,15 @@ jobs:
 
           cd dex2cxx_tool
 
-          cat > dxx.cfg <<'EOF'
+          NDK_DIR="$ANDROID_HOME/ndk/${NDK_VERSION}"
+
+          test -d "$NDK_DIR"
+          test -x "$NDK_DIR/ndk-build"
+
+          cat > dxx.cfg <<EOF
           {
               "apktool": "tools/apktool.jar",
-              "ndk_dir": "android-ndk",
+              "ndk_dir": "$NDK_DIR",
               "signature": {
                   "keystore_path": "keystore/debug.keystore",
                   "alias": "androiddebugkey",
@@ -155,11 +143,27 @@ jobs:
           EOF
 
           echo "========================================"
-          echo "dxx.cfg"
+          echo "Dex2Cxx configuration"
           echo "========================================"
 
           cat dxx.cfg
 
+          echo
+          echo "NDK:"
+          echo "$NDK_DIR"
+
+          echo
+          echo "ndk-build:"
+          ls -l "$NDK_DIR/ndk-build"
+
+          echo
+          echo "Testing ndk-build..."
+
+          "$NDK_DIR/ndk-build" --version || true
+
+      # ============================================================
+      # 8. Prepare Filter
+      # ============================================================
       - name: Prepare Filter
         shell: bash
         run: |
@@ -176,11 +180,14 @@ jobs:
           fi
 
           echo "========================================"
-          echo "filter.txt"
+          echo "Filter"
           echo "========================================"
 
           cat filter.txt
 
+      # ============================================================
+      # 9. Build Dex2Cxx JAR
+      # ============================================================
       - name: Build Dex2Cxx
         shell: bash
         run: |
@@ -192,12 +199,18 @@ jobs:
 
           ./java/build.sh
 
-          test -s dex2cxx.jar
+          if [ ! -s dex2cxx.jar ]; then
+            echo "::error::dex2cxx.jar was not generated."
+            exit 1
+          fi
 
           echo
           echo "Dex2Cxx JAR:"
           ls -lh dex2cxx.jar
 
+      # ============================================================
+      # 10. Verify CLI
+      # ============================================================
       - name: Verify Dex2Cxx
         shell: bash
         run: |
@@ -207,38 +220,9 @@ jobs:
 
           java -jar dex2cxx.jar --help
 
-      - name: Verify Local NDK Used By Dex2Cxx
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd dex2cxx_tool
-
-          echo "========================================"
-          echo "LOCAL DEX2CXX NDK"
-          echo "========================================"
-
-          pwd
-
-          echo
-          echo "NDK path:"
-          realpath android-ndk
-
-          echo
-          echo "NDK version:"
-          cat android-ndk/source.properties
-
-          echo
-          echo "ndk-build:"
-          ls -l android-ndk/ndk-build
-
-          test -x android-ndk/ndk-build
-
-          echo
-          echo "Running ndk-build --version..."
-
-          android-ndk/ndk-build --version || true
-
+      # ============================================================
+      # 11. Scan APK
+      # ============================================================
       - name: Scan APK
         shell: bash
         run: |
@@ -259,9 +243,11 @@ jobs:
           echo "MATCHED METHODS"
           echo "========================================"
 
-          cat methods-report.txt
+          if [ -f methods-report.txt ]; then
+            cat methods-report.txt
+          fi
 
-          MATCHED=$(wc -l < methods-report.txt)
+          MATCHED=$(wc -l < methods-report.txt 2>/dev/null || echo 0)
 
           echo
           echo "Matched methods: $MATCHED"
@@ -271,6 +257,45 @@ jobs:
             exit 1
           fi
 
+      # ============================================================
+      # 12. Verify NDK Path Before Conversion
+      # ============================================================
+      - name: Verify Dex2Cxx NDK Path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          NDK_DIR="$ANDROID_HOME/ndk/${NDK_VERSION}"
+
+          echo "========================================"
+          echo "FINAL NDK CHECK"
+          echo "========================================"
+
+          echo "Current directory:"
+          pwd
+
+          echo
+          echo "Configured NDK:"
+          grep '"ndk_dir"' dxx.cfg
+
+          echo
+          echo "Absolute NDK path:"
+          realpath "$NDK_DIR"
+
+          echo
+          echo "ndk-build:"
+          ls -l "$NDK_DIR/ndk-build"
+
+          test -x "$NDK_DIR/ndk-build"
+
+          echo
+          echo "NDK check: OK"
+
+      # ============================================================
+      # 13. Run Dex2Cxx
+      # ============================================================
       - name: Run Dex2Cxx
         shell: bash
         run: |
@@ -288,8 +313,8 @@ jobs:
           pwd
 
           echo
-          echo "Expected local NDK:"
-          realpath android-ndk
+          echo "Dex2Cxx configuration:"
+          cat dxx.cfg
 
           echo
           echo "Starting conversion..."
@@ -300,13 +325,37 @@ jobs:
             --filter ./filter.txt \
             --report ./methods-report.txt
 
-          test -s protected.apk
+          if [ ! -s protected.apk ]; then
+            echo "::error::Dex2Cxx did not generate protected.apk."
+            exit 1
+          fi
 
           echo
-          echo "Dex2Cxx completed successfully."
+          echo "========================================"
+          echo "DEX2CXX COMPLETED"
+          echo "========================================"
 
           ls -lh protected.apk
 
+      # ============================================================
+      # 14. Validate Protected APK
+      # ============================================================
+      - name: Validate Protected APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          test -s protected.apk
+
+          unzip -t protected.apk >/dev/null
+
+          echo "APK ZIP structure: OK"
+
+      # ============================================================
+      # 15. Analyze Output
+      # ============================================================
       - name: Analyze Output
         shell: bash
         run: |
@@ -314,8 +363,9 @@ jobs:
 
           cd dex2cxx_tool
 
+          echo
           echo "========================================"
-          echo "OUTPUT DEX"
+          echo "OUTPUT DEX FILES"
           echo "========================================"
 
           unzip -Z1 protected.apk \
@@ -339,15 +389,9 @@ jobs:
 
           cat methods-report.txt
 
-          echo
-          echo "========================================"
-          echo "APK TEST"
-          echo "========================================"
-
-          unzip -t protected.apk >/dev/null
-
-          echo "APK ZIP: OK"
-
+      # ============================================================
+      # 16. Upload Result
+      # ============================================================
       - name: Upload Dex2Cxx Result
         if: success()
         uses: actions/upload-artifact@v4
