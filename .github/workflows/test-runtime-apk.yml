@@ -38,9 +38,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # ============================================================
-      # 4. Install Android Build Tools
+      # 4. Install Android SDK + NDK
       # ============================================================
-      - name: Install Android SDK
+      - name: Install Android SDK and NDK
         shell: bash
         run: |
           set -euo pipefail
@@ -50,9 +50,14 @@ jobs:
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
-            "build-tools;${BUILD_TOOLS}"
+            "build-tools;${BUILD_TOOLS}" \
+            "ndk;${NDK_VERSION}"
 
           echo "Android SDK ready."
+
+          echo
+          echo "NDK:"
+          ls -la "$ANDROID_HOME/ndk/${NDK_VERSION}"
 
       # ============================================================
       # 5. Verify Input APK
@@ -70,15 +75,70 @@ jobs:
           echo "Input APK:"
           ls -lh input/app.apk
 
-          echo
-          echo "Checking APK ZIP structure..."
-
           unzip -t input/app.apk >/dev/null
 
           echo "APK is valid."
 
       # ============================================================
-      # 6. Prepare Runtime Java Sources
+      # 6. Build Native Runtime
+      # ============================================================
+      - name: Build Native Runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd runtime/jni
+
+          "$ANDROID_HOME/ndk/${NDK_VERSION}/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT="$PWD/Android.mk" \
+            NDK_APPLICATION_MK="$PWD/Application.mk" \
+            V=1
+
+          echo
+          echo "========================================"
+          echo "Generated Native Libraries"
+          echo "========================================"
+
+          find libs \
+            -type f \
+            -name "*.so" \
+            -print \
+            -exec file {} \;
+
+      # ============================================================
+      # 7. Verify Native Runtime
+      # ============================================================
+      - name: Verify Native Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking native libraries..."
+
+          for ABI in \
+            arm64-v8a \
+            armeabi-v7a \
+            x86 \
+            x86_64
+          do
+
+            LIB="runtime/jni/libs/$ABI/libnative_library.so"
+
+            if [ ! -s "$LIB" ]; then
+              echo "::error::Missing native library: $LIB"
+              exit 1
+            fi
+
+            echo "OK: $ABI"
+
+          done
+
+          echo
+          echo "All 4 native libraries are available."
+
+      # ============================================================
+      # 8. Prepare Runtime Java Sources
       # ============================================================
       - name: Prepare Runtime Java
         shell: bash
@@ -117,7 +177,7 @@ jobs:
             -print
 
       # ============================================================
-      # 7. Compile Java Runtime
+      # 9. Compile Runtime Java
       # ============================================================
       - name: Compile Runtime Java
         shell: bash
@@ -156,7 +216,7 @@ jobs:
           echo "Generated class count: $CLASS_COUNT"
 
       # ============================================================
-      # 8. Create Runtime DEX
+      # 10. Create Runtime DEX
       # ============================================================
       - name: Create Runtime DEX
         shell: bash
@@ -190,15 +250,15 @@ jobs:
             exit 1
           fi
 
-          echo
-          echo "Running D8..."
-
           mapfile -t CLASS_FILES < <(
             find build/runtime-classes \
               -type f \
               -name "*.class" \
               -print
           )
+
+          echo
+          echo "Running D8..."
 
           "$D8" \
             --min-api 26 \
@@ -220,35 +280,7 @@ jobs:
           ls -lh build/runtime-dex/classes3.dex
 
       # ============================================================
-      # 9. Verify Native Runtime Libraries
-      # ============================================================
-      - name: Verify Native Runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking native libraries..."
-
-          for ABI in \
-            arm64-v8a \
-            armeabi-v7a \
-            x86 \
-            x86_64
-          do
-
-            LIB="runtime/jni/libs/$ABI/libnative_library.so"
-
-            if [ ! -s "$LIB" ]; then
-              echo "::error::Missing native library: $LIB"
-              exit 1
-            fi
-
-            echo "OK: $LIB"
-
-          done
-
-      # ============================================================
-      # 10. Prepare Test APK
+      # 11. Prepare Test APK
       # ============================================================
       - name: Prepare Test APK
         shell: bash
@@ -306,11 +338,11 @@ jobs:
           echo "Runtime injected into APK."
 
           echo
-          echo "Added DEX:"
+          echo "Runtime DEX:"
           ls -lh build/apk/classes3.dex
 
           echo
-          echo "Added native libraries:"
+          echo "Native libraries:"
 
           find build/apk/lib \
             -type f \
@@ -318,7 +350,7 @@ jobs:
             -exec ls -lh {} \;
 
       # ============================================================
-      # 11. Build APK
+      # 12. Build APK
       # ============================================================
       - name: Build APK
         shell: bash
@@ -340,7 +372,7 @@ jobs:
           echo "APK rebuilt successfully."
 
       # ============================================================
-      # 12. Zipalign APK
+      # 13. Zipalign APK
       # ============================================================
       - name: Zipalign APK
         shell: bash
@@ -363,11 +395,10 @@ jobs:
 
           echo
           echo "Aligned APK:"
-
           ls -lh build/runtime-test.apk
 
       # ============================================================
-      # 13. Verify Runtime APK
+      # 14. Verify Runtime APK
       # ============================================================
       - name: Verify Runtime APK
         shell: bash
@@ -427,7 +458,7 @@ jobs:
           ls -lh "$APK"
 
       # ============================================================
-      # 14. Upload Test APK
+      # 15. Upload Runtime Test APK
       # ============================================================
       - name: Upload Runtime Test APK
         if: success()
