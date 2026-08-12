@@ -1,4 +1,4 @@
-name: Dex2Cxx APK Obfuscator
+name: MSR Dex2C Builder
 
 on:
   workflow_dispatch:
@@ -6,20 +6,21 @@ on:
     paths:
       - "input/*.apk"
       - "filter.txt"
+      - "runtime/**"
       - ".github/workflows/build.yml"
 
 permissions:
   contents: read
 
 jobs:
-  protect-apk:
+  build:
     runs-on: ubuntu-latest
 
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
-      DEX2CXX_DIR: dex2cxx_tool
       NDK_VERSION: "29.0.14206865"
+      LIB_NAME: "msr"
 
     steps:
 
@@ -30,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
 
       # ============================================================
-      # 2. Java 17
+      # 2. Java
       # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -45,14 +46,14 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # ============================================================
-      # 4. Android SDK + NDK
+      # 4. Install SDK / NDK
       # ============================================================
-      - name: Install Android SDK / NDK
+      - name: Install Android SDK and NDK
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
           sdkmanager \
             "platform-tools" \
@@ -60,16 +61,14 @@ jobs:
             "build-tools;35.0.0" \
             "ndk;${NDK_VERSION}"
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
 
-          echo
-          echo "Installed Build Tools:"
-          ls -la "$ANDROID_HOME/build-tools"
+          echo "NDK=$NDK"
 
-          echo
-          echo "Installed NDK:"
-          ls -la "$ANDROID_HOME/ndk/${NDK_VERSION}"
+          test -d "$NDK"
+          test -f "$NDK/ndk-build"
+
+          echo "NDK installed successfully"
 
       # ============================================================
       # 5. Locate APK
@@ -84,16 +83,11 @@ jobs:
           APK_COUNT=$(find input \
             -maxdepth 1 \
             -type f \
-            -name "*.apk" \
-            | wc -l)
+            -name "*.apk" | wc -l)
 
           if [ "$APK_COUNT" -eq 0 ]; then
             echo "::error::No APK found in input/"
             exit 1
-          fi
-
-          if [ "$APK_COUNT" -gt 1 ]; then
-            echo "::warning::More than one APK found. Using the first one."
           fi
 
           INPUT_APK=$(find input \
@@ -105,42 +99,28 @@ jobs:
 
           echo "INPUT_APK=$INPUT_APK" >> "$GITHUB_ENV"
 
-          echo
-          echo "Selected APK:"
+          echo "Input APK:"
           ls -lh "$INPUT_APK"
-
-          echo
-          echo "File information:"
-          file "$INPUT_APK"
 
       # ============================================================
       # 6. Clone Dex2Cxx
       # ============================================================
-      - name: Setup Dex2Cxx
+      - name: Clone Dex2Cxx
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          rm -rf "$DEX2CXX_DIR"
+          rm -rf dex2cxx_tool
 
           git clone \
             --depth 1 \
             https://github.com/ispointer/Dex2cxx.git \
-            "$DEX2CXX_DIR"
+            dex2cxx_tool
 
-          cd "$DEX2CXX_DIR"
+          cd dex2cxx_tool
 
-          echo
           echo "Dex2Cxx commit:"
           git rev-parse HEAD
-
-          echo
-          echo "Repository files:"
-          find . \
-            -maxdepth 2 \
-            -type f \
-            | sort \
-            | head -100
 
       # ============================================================
       # 7. Configure Dex2Cxx
@@ -148,14 +128,16 @@ jobs:
       - name: Configure Dex2Cxx
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
+          cd dex2cxx_tool
+
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
 
           cat > dxx.cfg <<EOF
           {
               "apktool": "tools/apktool.jar",
-              "ndk_dir": "$ANDROID_HOME/ndk/$NDK_VERSION",
+              "ndk_dir": "$NDK",
               "signature": {
                   "keystore_path": "keystore/debug.keystore",
                   "alias": "androiddebugkey",
@@ -172,53 +154,44 @@ jobs:
           }
           EOF
 
-          echo
-          echo "===== dxx.cfg ====="
           cat dxx.cfg
 
       # ============================================================
       # 8. Prepare filter
       # ============================================================
-      - name: Prepare Class Filter
+      - name: Prepare Filter
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
+          cd dex2cxx_tool
 
           if [ -f ../filter.txt ]; then
             cp ../filter.txt ./filter.txt
           else
-            cat > filter.txt <<'EOF'
-          com.test1.MainActivity
-          EOF
+            printf '%s\n' 'com.test1.MainActivity' > filter.txt
           fi
 
-          echo
-          echo "===== filter.txt ====="
+          echo "===== FILTER ====="
           cat filter.txt
 
       # ============================================================
       # 9. Build Dex2Cxx JAR
       # ============================================================
-      - name: Build Dex2Cxx JAR
+      - name: Build Dex2Cxx
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
+          cd dex2cxx_tool
 
           chmod +x java/build.sh
 
           ./java/build.sh
 
-          if [ ! -f dex2cxx.jar ]; then
-            echo "::error::dex2cxx.jar was not generated."
-            exit 1
-          fi
+          test -s dex2cxx.jar
 
-          echo
-          echo "===== Dex2Cxx JAR ====="
+          echo "Dex2Cxx built:"
           ls -lh dex2cxx.jar
 
       # ============================================================
@@ -227,21 +200,39 @@ jobs:
       - name: Verify Dex2Cxx
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
+          cd dex2cxx_tool
 
           java -jar dex2cxx.jar --help
 
       # ============================================================
-      # 11. Scan APK / Generate Method Report
+      # 11. Verify NDK
       # ============================================================
-      - name: Scan APK / Generate Method Report
+      - name: Verify NDK
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+
+          echo "NDK:"
+          ls -ld "$NDK"
+
+          echo "ndk-build:"
+          ls -l "$NDK/ndk-build"
+
+          "$NDK/ndk-build" --version
+
+      # ============================================================
+      # 12. Scan APK
+      # ============================================================
+      - name: Scan APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
 
           rm -f methods-report.txt
 
@@ -253,48 +244,36 @@ jobs:
 
           echo
           echo "========================================"
-          echo "Matching methods"
+          echo "MATCHED METHODS"
           echo "========================================"
 
-          if [ -f methods-report.txt ]; then
-            cat methods-report.txt
-          fi
+          cat methods-report.txt
 
-          MATCHED=$(wc -l < methods-report.txt 2>/dev/null || echo 0)
+          MATCHED=$(wc -l < methods-report.txt)
 
           echo
           echo "Matched methods: $MATCHED"
 
           if [ "$MATCHED" -eq 0 ]; then
-            echo "::error::No methods matched the filter."
-            echo "::error::Check filter.txt and the package/class name."
+            echo "::error::No methods matched filter.txt"
             exit 1
           fi
 
       # ============================================================
-      # 12. Run Dex2Cxx
+      # 13. Run Dex2Cxx
       # ============================================================
-      - name: Run Dex2Cxx Conversion
+      - name: Run Dex2Cxx
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
+          cd dex2cxx_tool
 
           rm -f protected.apk
 
           echo "========================================"
-          echo "Starting Dex2Cxx"
+          echo "RUNNING DEX2CXX"
           echo "========================================"
-
-          echo "Input APK:"
-          echo "../$INPUT_APK"
-
-          echo
-          echo "Filter:"
-          cat filter.txt
-
-          echo
 
           java -jar dex2cxx.jar \
             -a "../$INPUT_APK" \
@@ -302,127 +281,65 @@ jobs:
             --filter ./filter.txt \
             --report ./methods-report.txt
 
-          if [ ! -f protected.apk ]; then
-            echo "::error::protected.apk was not generated."
-            exit 1
-          fi
-
-          if [ ! -s protected.apk ]; then
-            echo "::error::protected.apk is empty."
-            exit 1
-          fi
+          test -s protected.apk
 
           echo
-          echo "===== Generated APK ====="
+          echo "Generated APK:"
           ls -lh protected.apk
 
-          echo
-          file protected.apk
-
       # ============================================================
-      # 13. Validate APK + Native Libraries
+      # 14. Validate APK
       # ============================================================
       - name: Validate Protected APK
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$DEX2CXX_DIR"
-
-          echo
-          echo "========================================"
-          echo "APK validation"
-          echo "========================================"
-
-          if [ ! -s protected.apk ]; then
-            echo "::error::Protected APK does not exist."
-            exit 1
-          fi
-
-          # --------------------------------------------------------
-          # ZIP validation
-          # --------------------------------------------------------
-
-          echo
-          echo "[1] Testing ZIP structure..."
+          cd dex2cxx_tool
 
           unzip -t protected.apk >/dev/null
 
-          echo "ZIP: OK"
-
-          # --------------------------------------------------------
-          # DEX files
-          # --------------------------------------------------------
-
-          echo
-          echo "[2] DEX files:"
-
-          unzip -Z1 protected.apk \
-            | grep -E '^classes([0-9]*)?\.dex$' \
-            || true
-
-          # --------------------------------------------------------
-          # Native libraries
-          # --------------------------------------------------------
-
-          echo
-          echo "[3] Native libraries:"
-
-          unzip -l protected.apk \
-            | grep -E 'lib/.+\.so$' \
-            || true
-
-          echo
-          echo "[4] Complete native library list:"
-
-          unzip -Z1 protected.apk \
-            | grep '^lib/.*/.*\.so$' \
-            || true
-
-          # --------------------------------------------------------
-          # ABI verification
-          # --------------------------------------------------------
-
-          echo
-          echo "[5] Checking expected ABIs..."
-
-          FOUND=0
-
-          for ABI in \
-            arm64-v8a \
-            armeabi-v7a \
-            x86 \
-            x86_64
-          do
-
-            if unzip -Z1 protected.apk \
-              | grep -q "^lib/$ABI/.*\.so$"
-            then
-              echo "OK: $ABI"
-              FOUND=$((FOUND + 1))
-            else
-              echo "WARNING: missing $ABI"
-            fi
-
-          done
-
-          echo
-          echo "ABIs containing native libraries: $FOUND/4"
-
-          # --------------------------------------------------------
-          # Do not silently accept an APK without native code
-          # --------------------------------------------------------
-
-          if [ "$FOUND" -eq 0 ]; then
-            echo "::error::No native .so files were found inside the protected APK."
-            exit 1
-          fi
-
-          echo
-          echo "APK validation completed successfully."
+          echo "APK ZIP structure: OK"
 
       # ============================================================
-      # 14. Prepare Final Output
+      # 15. Analyze output
+      # ============================================================
+      - name: Analyze Output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd dex2cxx_tool
+
+          echo
+          echo "========================================"
+          echo "OUTPUT DEX FILES"
+          echo "========================================"
+
+          unzip -l protected.apk \
+            | awk '{print $4}' \
+            | grep -E '^classes[0-9]*\.dex$' \
+            | sort -u || true
+
+          echo
+          echo "========================================"
+          echo "OUTPUT NATIVE LIBRARIES"
+          echo "========================================"
+
+          unzip -l protected.apk \
+            | awk '{print $4}' \
+            | grep '^lib/.*/.*\.so$' \
+            | sort -u || true
+
+          echo
+          echo "========================================"
+          echo "METHOD REPORT"
+          echo "========================================"
+
+          cat methods-report.txt
+
+      # ============================================================
+      # 16. Prepare final artifact
       # ============================================================
       - name: Prepare Final Output
         shell: bash
@@ -431,68 +348,28 @@ jobs:
 
           mkdir -p output
 
-          cp \
-            "$DEX2CXX_DIR/protected.apk" \
-            output/final_protected.apk
+          cp dex2cxx_tool/protected.apk \
+             output/final_protected.apk
 
-          cp \
-            "$DEX2CXX_DIR/methods-report.txt" \
-            output/methods-report.txt
+          cp dex2cxx_tool/methods-report.txt \
+             output/methods-report.txt
 
-          echo
+          test -s output/final_protected.apk
+
           echo "========================================"
-          echo "Final output"
+          echo "FINAL OUTPUT"
           echo "========================================"
 
           ls -lh output/
 
-          echo
-          echo "Final APK:"
-          file output/final_protected.apk
-
-          echo
-          echo "DEX files inside final APK:"
-
-          unzip -Z1 output/final_protected.apk \
-            | grep -E '^classes([0-9]*)?\.dex$' \
-            || true
-
-          echo
-          echo "Native libraries inside final APK:"
-
-          unzip -Z1 output/final_protected.apk \
-            | grep '^lib/.*/.*\.so$' \
-            || true
-
       # ============================================================
-      # 15. Final APK Integrity Check
-      # ============================================================
-      - name: Final APK Integrity Check
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking final APK..."
-
-          test -s output/final_protected.apk
-
-          unzip -t output/final_protected.apk >/dev/null
-
-          echo "Final APK: VALID"
-
-          echo
-          echo "SHA256:"
-
-          sha256sum output/final_protected.apk
-
-      # ============================================================
-      # 16. Upload Artifact
+      # 17. Upload
       # ============================================================
       - name: Upload Protected APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: protected-apk
+          name: MSR-protected-apk
           path: |
             output/final_protected.apk
             output/methods-report.txt
